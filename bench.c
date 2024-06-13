@@ -11,13 +11,58 @@
 
 #include "bench.h"
 
+int DATA_SIZE_GB = 10;
+int TEST_DURATION_S = 10;
+
 void *DATA;
+unsigned long DATA_SIZE;
 
 unsigned long *RESULTS;
 unsigned long RESULTS_I = 0;
 uv_mutex_t RESULTS_LOCK;
 
 volatile sig_atomic_t PROCEED = 0;
+
+// usage prints the usage message.
+void usage()
+{
+	printf("Usage:\n"
+	       "  bech <gigabytes to load>>\n"
+	       "  bech <gigabytes to load> <seconds to run>\n");
+}
+
+// read_args reads configuration values from command line arguments.
+int read_args(int argc, char **argv)
+{
+	switch (argc) {
+	case 1:
+		return EXIT_SUCCESS;
+	case 2:
+		DATA_SIZE_GB = atoi(argv[1]);
+		break;
+	case 3:
+		DATA_SIZE_GB = atoi(argv[1]);
+		TEST_DURATION_S = atoi(argv[2]);
+		break;
+	default:
+		printf("Invalid number of arguments.\n");
+		usage();
+		return EXIT_FAILURE;
+	}
+
+	if (DATA_SIZE_GB < 1) {
+		printf("Must load at least one gigabyte.\n");
+		usage();
+		return EXIT_FAILURE;
+	}
+	if (TEST_DURATION_S < 1) {
+		printf("Must run for more than one second.\n");
+		usage();
+		return EXIT_FAILURE;
+	}
+
+	return EXIT_SUCCESS;
+}
 
 // load_mem reads DATA_SIZE bytes of random data into DATA.
 unsigned long load_mem()
@@ -143,6 +188,11 @@ float stdev(unsigned long *data, unsigned long n, float avg)
 int main(int argc, char **argv)
 {
 	int ret = EXIT_SUCCESS;
+
+	if (read_args(argc, argv) != EXIT_SUCCESS) {
+		exit(EXIT_FAILURE);
+	}
+	DATA_SIZE = DATA_SIZE_GB * GB;
 
 	struct timespec clock_res;
 	clock_getres(CLOCK_MONOTONIC, &clock_res);

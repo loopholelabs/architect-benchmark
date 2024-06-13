@@ -1,5 +1,3 @@
-#define DATA_SIZE_GB 10
-#define TEST_DURATION_S 10
 #define READ_INTERVAL_MS 33
 
 #define READ_MAX_MB 100
@@ -7,5 +5,3 @@
 
 #define MB (1024UL * 1024UL)
 #define GB (1024UL * MB)
-
-#define DATA_SIZE (DATA_SIZE_GB * GB)
