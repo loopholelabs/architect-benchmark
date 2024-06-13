@@ -1,0 +1,7 @@
+# Output binary
+bench
+
+# C autoformat
+.ccls
+.ccls-cache
+compile_commands.json
