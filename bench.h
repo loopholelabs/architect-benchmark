@@ -4,3 +4,8 @@
 
 #define READ_MAX_MB 100
 #define RESULTS_MAX 100000
+
+#define MB (1024UL * 1024UL)
+#define GB (1024UL * MB)
+
+#define DATA_SIZE (DATA_SIZE_GB * GB)

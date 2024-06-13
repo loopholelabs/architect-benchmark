@@ -11,11 +11,7 @@
 
 #include "bench.h"
 
-const unsigned long MB = 1024 * 1024;
-const unsigned long GB = MB * 1024;
-
 void *DATA;
-const unsigned long DATA_SIZE = DATA_SIZE_GB * GB;
 
 unsigned long *RESULTS;
 unsigned long RESULTS_I = 0;
@@ -60,7 +56,7 @@ static void read_mem()
 
 	void *buf = malloc(size);
 
-	// Read from DATA and track how long the opreation takes.
+	// Read from DATA and track how long the operation takes.
 	struct timespec before, after;
 	clock_gettime(CLOCK_MONOTONIC, &before);
 	memcpy(buf, DATA, size);
