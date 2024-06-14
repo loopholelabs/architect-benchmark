@@ -39,6 +39,17 @@ pthread_mutex_t RESULTS_LOCK;
 
 volatile sig_atomic_t PROCEED = 0;
 
+// stats are statistics values computed from sampled data.
+struct stats {
+	unsigned long min;
+	unsigned long max;
+	double avg;
+	double stdev;
+	double p99;
+	double p95;
+	double p90;
+};
+
 // usage prints the usage message.
 void usage()
 {
@@ -164,18 +175,8 @@ int cmpulong(const void *a, const void *b)
 	return 0;
 }
 
-// sum returns the sum of the n first values from data.
-unsigned long long sum(unsigned long *data, unsigned long n)
-{
-	unsigned long long sum = 0;
-	for (unsigned long i = 0; i < n; i++) {
-		sum += data[i];
-	}
-	return sum;
-}
-
 // percentile returns the k-th percentile of the first n values of data.
-float percentile(unsigned long *data, unsigned long n, int k)
+double percentile(unsigned long *data, unsigned long n, int k)
 {
 	unsigned long r = (k * (n - 1)) / 100;
 	unsigned long rmod = (k * (n - 1)) % 100;
@@ -184,16 +185,38 @@ float percentile(unsigned long *data, unsigned long n, int k)
 	return data[r] + (rmod / 100.0) * (data[r + 1] - data[r]);
 }
 
-// stdev returns the standard deviation of the first n values of data given its
-// average avg.
-float stdev(unsigned long *data, unsigned long n, float avg)
+// compute_stats calculates statistics about data. It assumes data is sorted in
+// ascending order.
+void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 {
-	double sqrdiff = 0;
-	for (unsigned long i = 0; i < n; i++) {
-		double diff = data[i] - avg;
-		sqrdiff += diff * diff;
+	// Handle trivial case.
+	if (size == 1) {
+		res->min = data[0];
+		res->max = data[0];
+		res->avg = data[0];
+		res->stdev = 0;
+		res->p99 = data[0];
+		res->p95 = data[0];
+		res->p90 = data[0];
+		return;
 	}
-	return sqrt(sqrdiff / n);
+
+	double avg = data[0], prev_avg = data[0];
+	double var = 0;
+
+	for (unsigned long i = 1; i < size; i++) {
+		avg = prev_avg + (data[i] - prev_avg) / i;
+		var += (data[i] - prev_avg) * (data[i] - avg);
+		prev_avg = avg;
+	}
+
+	res->min = data[0];
+	res->max = data[size - 1];
+	res->avg = avg;
+	res->stdev = sqrt(var / (size - 1));
+	res->p99 = percentile(data, size, 99);
+	res->p95 = percentile(data, size, 95);
+	res->p90 = percentile(data, size, 90);
 }
 
 int main(int argc, char **argv)
@@ -213,6 +236,7 @@ int main(int argc, char **argv)
 	srand(time(NULL));
 	pthread_mutex_init(&RESULTS_LOCK, NULL);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
+	struct stats *results_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
@@ -252,24 +276,19 @@ int main(int argc, char **argv)
 
 	printf("Calculating results...\n");
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
-	unsigned long long s = sum(RESULTS, RESULTS_I);
-	float avg = s / (float)RESULTS_I;
-	float st = stdev(RESULTS, RESULTS_I, avg);
-	float p99 = percentile(RESULTS, RESULTS_I, 99);
-	float p95 = percentile(RESULTS, RESULTS_I, 95);
-	float p90 = percentile(RESULTS, RESULTS_I, 90);
 
+	compute_stats(results_stats, RESULTS, RESULTS_I);
 	printf("Results:\n");
-	printf("  Min: %ld ns\n", RESULTS[0]);
-	printf("  Max: %ld ns\n", RESULTS[RESULTS_I - 1]);
-	printf("  Sum: %lld ns\n", s);
-	printf("  Avg: %.2f ns\n", avg);
-	printf("  Stdev: %.2f ns\n", st);
-	printf("  P99: %.2f ns\n", p99);
-	printf("  P95: %.2f ns\n", p95);
-	printf("  P90: %.2f ns\n", p90);
+	printf("  Min: %ld ns\n", results_stats->min);
+	printf("  Max: %ld ns\n", results_stats->max);
+	printf("  Avg: %.2f ns\n", results_stats->avg);
+	printf("  Stdev: %.2f ns\n", results_stats->stdev);
+	printf("  P99: %.2f ns\n", results_stats->p99);
+	printf("  P95: %.2f ns\n", results_stats->p95);
+	printf("  P90: %.2f ns\n", results_stats->p90);
 
 free:
+	free(results_stats);
 	free(DATA);
 	free(RESULTS);
 	exit(ret);
