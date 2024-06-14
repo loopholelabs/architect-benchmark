@@ -23,7 +23,7 @@
 #include <errno.h>
 #include <time.h>
 #include <math.h>
-#include <uv.h>
+#include <pthread.h>
 
 #include "bench.h"
 
@@ -35,7 +35,7 @@ unsigned long DATA_SIZE;
 
 unsigned long *RESULTS;
 unsigned long RESULTS_I = 0;
-uv_mutex_t RESULTS_LOCK;
+pthread_mutex_t RESULTS_LOCK;
 
 volatile sig_atomic_t PROCEED = 0;
 
@@ -105,7 +105,7 @@ unsigned long load_mem()
 
 // read_mem reads a random chunk of data from DATA and stores how long it took
 // to read it in RESULTS.
-static void read_mem()
+static void *read_mem()
 {
 	unsigned long offset = rand() % (DATA_SIZE - 1);
 	unsigned long size = rand() % (READ_MAX_MB * MB);
@@ -133,20 +133,15 @@ static void read_mem()
 	}
 	long diff = secs_diff * 1e9 + nsecs_diff;
 
-	uv_mutex_lock(&RESULTS_LOCK);
+	pthread_mutex_lock(&RESULTS_LOCK);
 	if (RESULTS_I < RESULTS_MAX) {
 		RESULTS[RESULTS_I] = diff;
 		RESULTS_I++;
 	} else {
 		printf("WARN: Result storage limit reached.");
 	}
-	uv_mutex_unlock(&RESULTS_LOCK);
-}
-
-// stop_timer stops the timer in handle->data.
-static void stop_timer(uv_timer_t *handle)
-{
-	uv_timer_stop((uv_timer_t *)handle->data);
+	pthread_mutex_unlock(&RESULTS_LOCK);
+	return NULL;
 }
 
 // handle_signal unblocks the process to continue.
@@ -216,7 +211,7 @@ int main(int argc, char **argv)
 
 	// Initialize RNG seed, RESULTS_LOCK mutex, and signal handler.
 	srand(time(NULL));
-	uv_mutex_init(&RESULTS_LOCK);
+	pthread_mutex_init(&RESULTS_LOCK, NULL);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
 
 	signal(SIGUSR1, handle_signal);
@@ -241,22 +236,18 @@ int main(int argc, char **argv)
 	printf("Signal received.\n");
 
 	printf("Reading memory for %ds...\n", TEST_DURATION_S);
-	uv_loop_t *loop = uv_default_loop();
-	uv_timer_t read_mem_handle;
+	pthread_t tids[WAIT_THREADS];
+	int total_runs = TEST_DURATION_S * 1000 / READ_INTERVAL_MS;
+	struct timespec read_interval = { .tv_nsec = READ_INTERVAL_MS * 1e6 };
 
-	// read_mem_handle is a high frequency timer that reads a random chunk of
-	// memory.
-	uv_timer_init(loop, &read_mem_handle);
-	uv_timer_start(&read_mem_handle, read_mem, 0, READ_INTERVAL_MS);
-
-	// stop_handle is a timer that fires once to stop the memory read events.
-	uv_timer_t stop_handle;
-	stop_handle.data = &read_mem_handle;
-	uv_timer_init(loop, &stop_handle);
-	uv_timer_start(&stop_handle, stop_timer, TEST_DURATION_S * 1000, 0);
-
-	uv_run(loop, UV_RUN_DEFAULT);
-	uv_loop_close(loop);
+	for (int i = 0; i < total_runs; i++) {
+		pthread_create(&tids[i % WAIT_THREADS], NULL, read_mem, NULL);
+		if (nanosleep(&read_interval, NULL))
+			break;
+	}
+	for (int i = 0; i < WAIT_THREADS; i++) {
+		pthread_join(tids[i], NULL);
+	}
 	printf("Read %ld segments of memory.\n", RESULTS_I);
 
 	printf("Calculating results...\n");

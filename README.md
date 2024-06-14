@@ -12,24 +12,7 @@
 
 ## Build
 
-The program used [`libuv`](https://libuv.org/) to control the timing of
-operations. Before building the benchmark binary you must install it in your
-system.
-
-### Debian and Ubuntu
-
-```bash
-sudo apt update
-sudo apt install libuv1-dev
-```
-
-### macOS
-
-```bash
-brew install libuv
-```
-
-Build the `bench` binary.
+Run the following command to build the `bench` binary.
 
 ```bash
 make

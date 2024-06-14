@@ -18,6 +18,7 @@
 
 #define READ_MAX_MB 100
 #define RESULTS_MAX 100000
+#define WAIT_THREADS 10
 
 #define MB (1024UL * 1024UL)
 #define GB (1024UL * MB)
