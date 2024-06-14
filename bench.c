@@ -23,12 +23,10 @@
 #include <errno.h>
 #include <time.h>
 #include <math.h>
+#include <stdbool.h>
 #include <pthread.h>
 
 #include "bench.h"
-
-int DATA_SIZE_GB = 10;
-int TEST_DURATION_S = 10;
 
 void *DATA;
 unsigned long DATA_SIZE;
@@ -54,42 +52,15 @@ struct stats {
 // usage prints the usage message.
 void usage()
 {
-	printf("Usage:\n"
-	       "  bech <gigabytes to load>>\n"
-	       "  bech <gigabytes to load> <seconds to run>\n");
-}
-
-// read_args reads configuration values from command line arguments.
-int read_args(int argc, char **argv)
-{
-	switch (argc) {
-	case 1:
-		return EXIT_SUCCESS;
-	case 2:
-		DATA_SIZE_GB = atoi(argv[1]);
-		break;
-	case 3:
-		DATA_SIZE_GB = atoi(argv[1]);
-		TEST_DURATION_S = atoi(argv[2]);
-		break;
-	default:
-		printf("Invalid number of arguments.\n");
-		usage();
-		return EXIT_FAILURE;
-	}
-
-	if (DATA_SIZE_GB < 1) {
-		printf("Must load at least one gigabyte.\n");
-		usage();
-		return EXIT_FAILURE;
-	}
-	if (TEST_DURATION_S < 1) {
-		printf("Must run for more than one second.\n");
-		usage();
-		return EXIT_FAILURE;
-	}
-
-	return EXIT_SUCCESS;
+	printf("Architect Memory Benchmark.\n\n"
+	       "Usage:\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-q]\n"
+	       "\nOptions:\n"
+	       "  -h  Display this help message.\n"
+	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
+	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
+	       "  -s  Seed for the random number generator [default: current timestamp].\n"
+	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
 }
 
 // load_mem reads DATA_SIZE bytes of random data into DATA.
@@ -123,7 +94,7 @@ static void *read_mem()
 	unsigned long size = rand() % (READ_MAX_MB * MB);
 
 	// Adjust how much data to read to make sure we stay within bounds.
-	if (offset + size > DATA_SIZE_GB * GB) {
+	if (offset + size > DATA_SIZE) {
 		size = DATA_SIZE - offset;
 	}
 
@@ -221,22 +192,20 @@ void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 	res->p90 = percentile(data, size, 90);
 }
 
-int main(int argc, char **argv)
+int benchmark(int test_duration, int data_size, long seed, bool quick)
 {
 	int ret = EXIT_SUCCESS;
 
-	if (read_args(argc, argv) != EXIT_SUCCESS) {
-		exit(EXIT_FAILURE);
-	}
-	DATA_SIZE = DATA_SIZE_GB * GB;
-
 	struct timespec clock_res;
 	clock_getres(CLOCK_MONOTONIC, &clock_res);
-	printf("Clock resolution is %ld ns.\n", clock_res.tv_nsec);
+	printf("Clock resolution: %ld ns\n", clock_res.tv_nsec);
+	printf("Benchmark seed:   %ld\n\n", seed);
 
-	// Initialize RNG seed, RESULTS_LOCK mutex, and signal handler.
-	srand(time(NULL));
+	// Initialize RNG seed, signal handler, and shared variables.
+	srand(seed);
 	pthread_mutex_init(&RESULTS_LOCK, NULL);
+	DATA_SIZE = data_size * GB;
+	DATA = (void *)malloc(DATA_SIZE);
 	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
@@ -247,8 +216,7 @@ int main(int argc, char **argv)
 	sigemptyset(&set);
 	sigaddset(&set, SIGUSR1);
 
-	printf("Loading %d GB into memory...\n", DATA_SIZE_GB);
-	DATA = (void *)malloc(DATA_SIZE);
+	printf("Loading %d GB into memory...\n", data_size);
 	unsigned long loaded = load_mem();
 	if (loaded == 0) {
 		ret = EXIT_FAILURE;
@@ -256,16 +224,19 @@ int main(int argc, char **argv)
 	}
 	printf("Loaded %ld GB into memory.\n", loaded / GB);
 
-	printf("Waiting for SIGUSR1...\n");
-	sigprocmask(SIG_BLOCK, &set, &old_set);
-	while (!PROCEED)
-		sigsuspend(&old_set);
-	sigprocmask(SIG_UNBLOCK, &set, NULL);
-	printf("Signal received.\n");
+	if (!quick) {
+		printf("Waiting for SIGUSR1...\n");
+		sigprocmask(SIG_BLOCK, &set, &old_set);
+		while (!PROCEED)
+			sigsuspend(&old_set);
+		sigprocmask(SIG_UNBLOCK, &set, NULL);
+		printf("Signal received.\n");
+	}
 
-	printf("Reading memory for %ds...\n", TEST_DURATION_S);
+	printf("Reading memory every %dms for %ds...\n", READ_INTERVAL_MS,
+	       test_duration);
 	pthread_t tids[WAIT_THREADS];
-	int total_runs = TEST_DURATION_S * 1000 / READ_INTERVAL_MS;
+	int total_runs = test_duration * 1000 / READ_INTERVAL_MS;
 	struct timespec read_interval = { .tv_nsec = READ_INTERVAL_MS * 1e6 };
 
 	for (int i = 0; i < total_runs; i++) {
@@ -283,7 +254,7 @@ int main(int argc, char **argv)
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(read_stats, READS, RESULTS_I);
-	printf("Data read sizes:\n");
+	printf("\nData read sizes:\n");
 	printf("    Min: %ld bytes\n", read_stats->min);
 	printf("    Max: %ld bytes\n", read_stats->max);
 	printf("    Avg: %.2f bytes\n", read_stats->avg);
@@ -293,7 +264,7 @@ int main(int argc, char **argv)
 	printf("    P90: %.2f bytes\n", read_stats->p90);
 
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("Data read times:\n");
+	printf("\nData read times:\n");
 	printf("    Min: %ld ns\n", results_stats->min);
 	printf("    Max: %ld ns\n", results_stats->max);
 	printf("    Avg: %.2f ns\n", results_stats->avg);
@@ -308,4 +279,54 @@ free:
 	free(DATA);
 	free(RESULTS);
 	exit(ret);
+}
+
+int main(int argc, char **argv)
+{
+	int opt;
+	int data_size = 10;
+	int test_duration = 10;
+	long seed = time(0);
+	bool quick = false;
+
+	while ((opt = getopt(argc, argv, "t:d:s:qh")) != -1) {
+		switch (opt) {
+		case 't':
+			test_duration = atoi(optarg);
+			break;
+		case 'd':
+			data_size = atoi(optarg);
+			break;
+		case 's':
+			seed = atol(optarg);
+			break;
+		case 'q':
+			quick = true;
+			break;
+		case 'h':
+			usage();
+			exit(EXIT_SUCCESS);
+		default:
+			usage();
+			exit(EXIT_FAILURE);
+		}
+	}
+
+	if (data_size < 1) {
+		printf("Must load at least one gigabyte.\n");
+		usage();
+		exit(EXIT_FAILURE);
+	}
+	if (test_duration < 1) {
+		printf("Must run for more than one second.\n");
+		usage();
+		exit(EXIT_FAILURE);
+	}
+	if (seed < 1) {
+		printf("Invalid benchmark seed.\n");
+		usage();
+		exit(EXIT_FAILURE);
+	}
+
+	return benchmark(test_duration, data_size, seed, quick);
 }

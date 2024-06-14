@@ -24,7 +24,9 @@ Start the benchmark binary.
 
 ```console
 $ ./bench
-Clock resolution is 1 ns.
+Clock resolution: 1 ns
+Benchmark seed:   1718393125
+
 Loading 10 GB into memory...
 Loaded 10 GB into memory.
 Waiting for SIGUSR1...
@@ -41,16 +43,41 @@ pkill -SIGUSR1 bench
 $ ./bench
 ...
 Signal received.
-Reading memory for 10s...
-Read 302 segments of memory.
+Reading memory every 33ms for 10s...
+Read 303 segments of memory.
 Calculating results...
-Results:
-  Min: 26 ns
-  Max: 168 ns
-  Sum: 34522 ns
-  Avg: 114.31 ns
-  Stdev: 13.38 ns
-  P99: 123.00 ns
-  P95: 121.00 ns
-  P90: 120.00 ns
+
+Data read sizes:
+    Min: 538397 bytes
+    Max: 104448524 bytes
+    Avg: 54401862.46 bytes
+  Stdev: 30586031.83 bytes
+    P99: 103187622.24 bytes
+    P95: 97357087.90 bytes
+    P90: 93253651.40 bytes
+
+Data read times:
+    Min: 44 ns
+    Max: 386 ns
+    Avg: 192.54 ns
+  Stdev: 25.23 ns
+    P99: 220.98 ns
+    P95: 204.00 ns
+    P90: 202.00 ns
+```
+
+## Usage
+
+```
+Architect Memory Benchmark.
+
+Usage:
+  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-q]
+
+Options:
+  -h  Display this help message.
+  -t  Time in seconds for how long the test should run [default: 10].
+  -d  Amount of data in gigabytes to load into memory [default: 10].
+  -s  Seed for the random number generator [default: current timestamp].
+  -q  Quick mode, don't wait for SIGUSR1 before starting test.
 ```
