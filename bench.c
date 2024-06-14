@@ -33,6 +33,7 @@ int TEST_DURATION_S = 10;
 void *DATA;
 unsigned long DATA_SIZE;
 
+unsigned long *READS;
 unsigned long *RESULTS;
 unsigned long RESULTS_I = 0;
 pthread_mutex_t RESULTS_LOCK;
@@ -146,6 +147,7 @@ static void *read_mem()
 
 	pthread_mutex_lock(&RESULTS_LOCK);
 	if (RESULTS_I < RESULTS_MAX) {
+		READS[RESULTS_I] = size;
 		RESULTS[RESULTS_I] = diff;
 		RESULTS_I++;
 	} else {
@@ -235,8 +237,10 @@ int main(int argc, char **argv)
 	// Initialize RNG seed, RESULTS_LOCK mutex, and signal handler.
 	srand(time(NULL));
 	pthread_mutex_init(&RESULTS_LOCK, NULL);
+	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
+	struct stats *read_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
@@ -275,19 +279,31 @@ int main(int argc, char **argv)
 	printf("Read %ld segments of memory.\n", RESULTS_I);
 
 	printf("Calculating results...\n");
+	qsort(READS, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
+	compute_stats(read_stats, READS, RESULTS_I);
+	printf("Data read sizes:\n");
+	printf("    Min: %ld bytes\n", read_stats->min);
+	printf("    Max: %ld bytes\n", read_stats->max);
+	printf("    Avg: %.2f bytes\n", read_stats->avg);
+	printf("  Stdev: %.2f bytes\n", read_stats->stdev);
+	printf("    P99: %.2f bytes\n", read_stats->p99);
+	printf("    P95: %.2f bytes\n", read_stats->p95);
+	printf("    P90: %.2f bytes\n", read_stats->p90);
+
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("Results:\n");
-	printf("  Min: %ld ns\n", results_stats->min);
-	printf("  Max: %ld ns\n", results_stats->max);
-	printf("  Avg: %.2f ns\n", results_stats->avg);
+	printf("Data read times:\n");
+	printf("    Min: %ld ns\n", results_stats->min);
+	printf("    Max: %ld ns\n", results_stats->max);
+	printf("    Avg: %.2f ns\n", results_stats->avg);
 	printf("  Stdev: %.2f ns\n", results_stats->stdev);
-	printf("  P99: %.2f ns\n", results_stats->p99);
-	printf("  P95: %.2f ns\n", results_stats->p95);
-	printf("  P90: %.2f ns\n", results_stats->p90);
+	printf("    P99: %.2f ns\n", results_stats->p99);
+	printf("    P95: %.2f ns\n", results_stats->p95);
+	printf("    P90: %.2f ns\n", results_stats->p90);
 
 free:
+	free(read_stats);
 	free(results_stats);
 	free(DATA);
 	free(RESULTS);
