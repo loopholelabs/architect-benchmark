@@ -66,6 +66,36 @@ Data read times:
     P90: 202.00 ns
 ```
 
+### Running with Docker
+
+Alternatively, you can run the benchmark as a Docker container. The
+[`Makefile`](Makefile) provides some helper targets.
+
+Build the OCI image.
+
+```bash
+make docker
+```
+
+Run the test container.
+
+```console
+$ make docker-run
+docker run -i -t architect-benchmark -d 1
+Clock resolution: 1000000 ns
+Benchmark seed:   1718394201
+
+Loading 1 GB into memory...
+Loaded 1 GB into memory.
+Waiting for SIGUSR1...
+```
+
+From another terminal, send a `SIGUSR1` signal to the test container.
+
+```bash
+make docker-signal
+```
+
 ## Usage
 
 ```

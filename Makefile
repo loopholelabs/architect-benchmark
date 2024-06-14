@@ -18,7 +18,7 @@ docker:
 
 .PHONY: docker-run
 docker-run:
-	docker run -i -t $(DOCKER_IMAGE) 1
+	docker run -i -t $(DOCKER_IMAGE) -d 1
 
 .PHONY: docker-signal
 docker-signal:

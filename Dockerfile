@@ -2,7 +2,7 @@ FROM ubuntu:24.04
 
 WORKDIR /src
 RUN apt update && \
-  apt install -y build-essential libuv1-dev
+  apt install -y build-essential
 COPY . .
 RUN make
 
