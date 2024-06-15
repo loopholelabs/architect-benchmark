@@ -34,7 +34,8 @@ unsigned long DATA_SIZE;
 unsigned long *READS;
 unsigned long *RESULTS;
 unsigned long RESULTS_I = 0;
-pthread_mutex_t RESULTS_LOCK;
+pthread_mutex_t READ_LOCK;
+pthread_cond_t READ_TICK;
 
 volatile sig_atomic_t PROCEED = 0;
 
@@ -90,38 +91,47 @@ unsigned long load_mem()
 // to read it in RESULTS.
 static void *read_mem()
 {
-	unsigned long offset = rand() % (DATA_SIZE - 1);
-	unsigned long size = rand() % (READ_MAX_MB * MB);
+	// Notify main thread when read to handle ticks.
+	pthread_mutex_lock(&READ_LOCK);
+	pthread_cond_signal(&READ_TICK);
+	pthread_mutex_unlock(&READ_LOCK);
 
-	// Adjust how much data to read to make sure we stay within bounds.
-	if (offset + size > DATA_SIZE) {
-		size = DATA_SIZE - offset;
+	while (true) {
+		pthread_mutex_lock(&READ_LOCK);
+		pthread_cond_wait(&READ_TICK, &READ_LOCK);
+
+		unsigned long offset = rand() % (DATA_SIZE - 1);
+		unsigned long size = rand() % (READ_MAX_MB * MB);
+
+		// Adjust how much data to read to make sure we stay within bounds.
+		if (offset + size > DATA_SIZE) {
+			size = DATA_SIZE - offset;
+		}
+
+		void *buf = malloc(size);
+
+		// Read from DATA and track how long the operation takes.
+		struct timespec before, after;
+		clock_gettime(CLOCK_MONOTONIC, &before);
+		memcpy(buf, DATA, size);
+		clock_gettime(CLOCK_MONOTONIC, &after);
+
+		free(buf);
+
+		// Store time elapsed in nanoseconds.
+		long secs_diff = after.tv_sec - before.tv_sec;
+		long nsecs_diff = after.tv_nsec - before.tv_nsec;
+		long diff = secs_diff * 1000000000 + nsecs_diff;
+
+		if (RESULTS_I < RESULTS_MAX) {
+			READS[RESULTS_I] = size;
+			RESULTS[RESULTS_I] = diff;
+			RESULTS_I++;
+		} else {
+			printf("WARN: Result storage limit reached.\n");
+		}
+		pthread_mutex_unlock(&READ_LOCK);
 	}
-
-	void *buf = malloc(size);
-
-	// Read from DATA and track how long the operation takes.
-	struct timespec before, after;
-	clock_gettime(CLOCK_MONOTONIC, &before);
-	memcpy(buf, DATA, size);
-	clock_gettime(CLOCK_MONOTONIC, &after);
-
-	free(buf);
-
-	// Store time elapsed in nanoseconds.
-	long secs_diff = after.tv_sec - before.tv_sec;
-	long nsecs_diff = after.tv_nsec - before.tv_nsec;
-	long diff = secs_diff * 1000000000 + nsecs_diff;
-
-	pthread_mutex_lock(&RESULTS_LOCK);
-	if (RESULTS_I < RESULTS_MAX) {
-		READS[RESULTS_I] = size;
-		RESULTS[RESULTS_I] = diff;
-		RESULTS_I++;
-	} else {
-		printf("WARN: Result storage limit reached.");
-	}
-	pthread_mutex_unlock(&RESULTS_LOCK);
 	return NULL;
 }
 
@@ -210,7 +220,9 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 
 	// Initialize RNG seed, signal handler, and shared variables.
 	srand(seed);
-	pthread_mutex_init(&RESULTS_LOCK, NULL);
+	pthread_mutex_init(&READ_LOCK, NULL);
+	pthread_cond_init(&READ_TICK, NULL);
+
 	DATA_SIZE = data_size * GB;
 	DATA = (void *)malloc(DATA_SIZE);
 	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
@@ -242,21 +254,34 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 
 	printf("Reading memory every %dms for %ds...\n", READ_INTERVAL_MS,
 	       test_duration);
-	pthread_t tids[WAIT_THREADS];
-	int total_runs = test_duration * 1000 / READ_INTERVAL_MS;
+	int total_ticks = test_duration * 1000 / READ_INTERVAL_MS;
 	struct timespec read_interval = {
 		.tv_sec = READ_INTERVAL_MS / 1000,
 		.tv_nsec = (READ_INTERVAL_MS % 1000) * 1000000,
 	};
 
-	for (int i = 0; i < total_runs; i++) {
-		pthread_create(&tids[i % WAIT_THREADS], NULL, read_mem, NULL);
+	pthread_t read_tid;
+	pthread_create(&read_tid, NULL, read_mem, NULL);
+
+	// Wait for the read thread to be ready to handle ticks.
+	pthread_mutex_lock(&READ_LOCK);
+	pthread_cond_wait(&READ_TICK, &READ_LOCK);
+	pthread_mutex_unlock(&READ_LOCK);
+
+	for (int i = 0; i < total_ticks; i++) {
+		int lock_res = pthread_mutex_trylock(&READ_LOCK);
+		if (lock_res == 0) {
+			pthread_cond_signal(&READ_TICK);
+			pthread_mutex_unlock(&READ_LOCK);
+		} else {
+			printf("WARN: Read lock busy, missing tick.\n");
+		}
 		if (nanosleep(&read_interval, NULL))
 			break;
 	}
-	for (int i = 0; i < WAIT_THREADS; i++) {
-		pthread_join(tids[i], NULL);
-	}
+
+	pthread_cancel(read_tid);
+	pthread_join(read_tid, NULL);
 	printf("Read %ld segments of memory.\n", RESULTS_I);
 	if (RESULTS_I == 0) {
 		goto free;
@@ -291,6 +316,9 @@ free:
 	free(results_stats);
 	free(DATA);
 	free(RESULTS);
+	pthread_cond_destroy(&READ_TICK);
+	pthread_mutex_destroy(&READ_LOCK);
+
 	exit(ret);
 }
 
