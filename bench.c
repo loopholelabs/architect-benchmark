@@ -110,11 +110,8 @@ static void *read_mem()
 
 	// Store time elapsed in nanoseconds.
 	long secs_diff = after.tv_sec - before.tv_sec;
-	long nsecs_diff = after.tv_nsec;
-	if (secs_diff == 0) {
-		nsecs_diff = after.tv_nsec - before.tv_nsec;
-	}
-	long diff = secs_diff * 1e9 + nsecs_diff;
+	long nsecs_diff = after.tv_nsec - before.tv_nsec;
+	long diff = secs_diff * 1000000000 + nsecs_diff;
 
 	pthread_mutex_lock(&RESULTS_LOCK);
 	if (RESULTS_I < RESULTS_MAX) {
@@ -162,8 +159,18 @@ double percentile(unsigned long *data, unsigned long n, int k)
 // ascending order.
 void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 {
-	// Handle trivial case.
-	if (size == 1) {
+	// Handle trivial cases.
+	switch (size) {
+	case 0:
+		res->min = 0;
+		res->max = 0;
+		res->avg = 0;
+		res->stdev = 0;
+		res->p99 = 0;
+		res->p95 = 0;
+		res->p90 = 0;
+		return;
+	case 1:
 		res->min = data[0];
 		res->max = data[0];
 		res->avg = data[0];
@@ -237,7 +244,10 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	       test_duration);
 	pthread_t tids[WAIT_THREADS];
 	int total_runs = test_duration * 1000 / READ_INTERVAL_MS;
-	struct timespec read_interval = { .tv_nsec = READ_INTERVAL_MS * 1e6 };
+	struct timespec read_interval = {
+		.tv_sec = READ_INTERVAL_MS / 1000,
+		.tv_nsec = (READ_INTERVAL_MS % 1000) * 1000000,
+	};
 
 	for (int i = 0; i < total_runs; i++) {
 		pthread_create(&tids[i % WAIT_THREADS], NULL, read_mem, NULL);
@@ -248,6 +258,9 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 		pthread_join(tids[i], NULL);
 	}
 	printf("Read %ld segments of memory.\n", RESULTS_I);
+	if (RESULTS_I == 0) {
+		goto free;
+	}
 
 	printf("Calculating results...\n");
 	qsort(READS, RESULTS_I, sizeof(unsigned long), cmpulong);
