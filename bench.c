@@ -32,6 +32,7 @@ void *DATA;
 unsigned long DATA_SIZE;
 
 unsigned long *READS;
+unsigned long *RATES;
 unsigned long *RESULTS;
 unsigned long RESULTS_SIZE;
 unsigned long RESULTS_I = 0;
@@ -127,6 +128,7 @@ static void *read_mem()
 		if (RESULTS_I < RESULTS_SIZE) {
 			READS[RESULTS_I] = size;
 			RESULTS[RESULTS_I] = diff;
+			RATES[RESULTS_I] = size / diff;
 			RESULTS_I++;
 		} else {
 			printf("WARN: Result storage limit reached.\n");
@@ -241,9 +243,11 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	DATA = (void *)malloc(DATA_SIZE);
 	RESULTS_SIZE = test_duration * 1000 / READ_INTERVAL_MS;
 	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
+	RATES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
 	struct stats *read_stats = calloc(sizeof(struct stats), 1);
+	struct stats *rates_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
@@ -303,9 +307,11 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 
 	printf("Calculating results...\n");
 	qsort(READS, RESULTS_I, sizeof(unsigned long), cmpulong);
+	qsort(RATES, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(read_stats, READS, RESULTS_I);
+	compute_stats(rates_stats, RATES, RESULTS_I);
 	compute_stats(results_stats, RESULTS, RESULTS_I);
 
 	printf("Writing results to disk...\n");
@@ -313,18 +319,19 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	asprintf(&results_file_name, "./results-%ld.txt", time(0));
 	FILE *results_fd = fopen(results_file_name, "w");
 
-	for (int i = 0; i < RESULTS_I; i++) {
-		fprintf(results_fd, "%ld,%ld\n", READS[i], RESULTS[i]);
-	}
-
 	FILE *outputs[2] = { results_fd, stdout };
 	for (int i = 0; i < 2; i++) {
-		fprintf(outputs[i], "\n");
 		write_stats(outputs[i], "Data read sizes", read_stats, "bytes");
 		fprintf(outputs[i], "\n");
 		write_stats(outputs[i], "Data read times", results_stats, "ns");
+		fprintf(outputs[i], "\n");
+		write_stats(outputs[i], "Data read rates", rates_stats, "GB/s");
 	}
 
+	fprintf(results_fd, "\nRaw data:\n");
+	for (int i = 0; i < RESULTS_I; i++) {
+		fprintf(results_fd, "%ld,%ld\n", READS[i], RESULTS[i]);
+	}
 	printf("\nResults saved to %s\n", results_file_name);
 	fclose(results_fd);
 	free(results_file_name);
