@@ -33,6 +33,7 @@ unsigned long DATA_SIZE;
 
 unsigned long *READS;
 unsigned long *RESULTS;
+unsigned long RESULTS_SIZE;
 unsigned long RESULTS_I = 0;
 pthread_mutex_t READ_LOCK;
 pthread_cond_t READ_TICK;
@@ -123,7 +124,7 @@ static void *read_mem()
 		long nsecs_diff = after.tv_nsec - before.tv_nsec;
 		long diff = secs_diff * 1000000000 + nsecs_diff;
 
-		if (RESULTS_I < RESULTS_MAX) {
+		if (RESULTS_I < RESULTS_SIZE) {
 			READS[RESULTS_I] = size;
 			RESULTS[RESULTS_I] = diff;
 			RESULTS_I++;
@@ -225,8 +226,9 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 
 	DATA_SIZE = data_size * GB;
 	DATA = (void *)malloc(DATA_SIZE);
-	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
-	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_MAX);
+	RESULTS_SIZE = test_duration * 1000 / READ_INTERVAL_MS;
+	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
+	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
 	struct stats *read_stats = calloc(sizeof(struct stats), 1);
 
@@ -254,7 +256,6 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 
 	printf("Reading memory every %dms for %ds...\n", READ_INTERVAL_MS,
 	       test_duration);
-	int total_ticks = test_duration * 1000 / READ_INTERVAL_MS;
 	struct timespec read_interval = {
 		.tv_sec = READ_INTERVAL_MS / 1000,
 		.tv_nsec = (READ_INTERVAL_MS % 1000) * 1000000,
@@ -268,7 +269,7 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	pthread_cond_wait(&READ_TICK, &READ_LOCK);
 	pthread_mutex_unlock(&READ_LOCK);
 
-	for (int i = 0; i < total_ticks; i++) {
+	for (int i = 0; i < RESULTS_SIZE; i++) {
 		int lock_res = pthread_mutex_trylock(&READ_LOCK);
 		if (lock_res == 0) {
 			pthread_cond_signal(&READ_TICK);
