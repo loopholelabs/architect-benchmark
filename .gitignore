@@ -1,5 +1,7 @@
-# Output binary
+# Output files
 bench
+results-*.txt
+
 
 # C autoformat
 .ccls

@@ -210,6 +210,19 @@ void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 	res->p90 = percentile(data, size, 90);
 }
 
+// write_stats formats and writes the stats values to a given file descriptor.
+void write_stats(FILE *fd, char *title, struct stats *st, char *unit)
+{
+	fprintf(fd, "%s:\n", title);
+	fprintf(fd, "    Min: %ld %s\n", st->min, unit);
+	fprintf(fd, "    Max: %ld %s\n", st->max, unit);
+	fprintf(fd, "    Avg: %.2f %s\n", st->avg, unit);
+	fprintf(fd, "  Stdev: %.2f %s\n", st->stdev, unit);
+	fprintf(fd, "    P99: %.2f %s\n", st->p99, unit);
+	fprintf(fd, "    P95: %.2f %s\n", st->p95, unit);
+	fprintf(fd, "    P90: %.2f %s\n", st->p90, unit);
+}
+
 int benchmark(int test_duration, int data_size, long seed, bool quick)
 {
 	int ret = EXIT_SUCCESS;
@@ -293,24 +306,28 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(read_stats, READS, RESULTS_I);
-	printf("\nData read sizes:\n");
-	printf("    Min: %ld bytes\n", read_stats->min);
-	printf("    Max: %ld bytes\n", read_stats->max);
-	printf("    Avg: %.2f bytes\n", read_stats->avg);
-	printf("  Stdev: %.2f bytes\n", read_stats->stdev);
-	printf("    P99: %.2f bytes\n", read_stats->p99);
-	printf("    P95: %.2f bytes\n", read_stats->p95);
-	printf("    P90: %.2f bytes\n", read_stats->p90);
-
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("\nData read times:\n");
-	printf("    Min: %ld ns\n", results_stats->min);
-	printf("    Max: %ld ns\n", results_stats->max);
-	printf("    Avg: %.2f ns\n", results_stats->avg);
-	printf("  Stdev: %.2f ns\n", results_stats->stdev);
-	printf("    P99: %.2f ns\n", results_stats->p99);
-	printf("    P95: %.2f ns\n", results_stats->p95);
-	printf("    P90: %.2f ns\n", results_stats->p90);
+
+	printf("Writing results to disk...\n");
+	char *results_file_name;
+	asprintf(&results_file_name, "./results-%ld.txt", time(0));
+	FILE *results_fd = fopen(results_file_name, "w");
+
+	for (int i = 0; i < RESULTS_I; i++) {
+		fprintf(results_fd, "%ld,%ld\n", READS[i], RESULTS[i]);
+	}
+
+	FILE *outputs[2] = { results_fd, stdout };
+	for (int i = 0; i < 2; i++) {
+		fprintf(outputs[i], "\n");
+		write_stats(outputs[i], "Data read sizes", read_stats, "bytes");
+		fprintf(outputs[i], "\n");
+		write_stats(outputs[i], "Data read times", results_stats, "ns");
+	}
+
+	printf("\nResults saved to %s\n", results_file_name);
+	fclose(results_fd);
+	free(results_file_name);
 
 free:
 	free(read_stats);
