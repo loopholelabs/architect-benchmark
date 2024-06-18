@@ -31,14 +31,24 @@
 void *DATA;
 unsigned long DATA_SIZE;
 
-unsigned long *READS;
+unsigned long *SAMPLES;
 unsigned long *RESULTS;
 unsigned long RESULTS_SIZE;
 unsigned long RESULTS_I = 0;
-pthread_mutex_t READ_LOCK;
-pthread_cond_t READ_TICK;
+pthread_mutex_t TICK_LOCK;
+pthread_cond_t TICK;
 
 volatile sig_atomic_t PROCEED = 0;
+
+enum MemOp {
+	READ,
+	WRITE,
+};
+
+static const char *MEM_OP_STRING[] = {
+	"Read",
+	"Write",
+};
 
 // stats are statistics values computed from sampled data.
 struct stats {
@@ -51,17 +61,27 @@ struct stats {
 	double p90;
 };
 
+// benchmark_opts are the options used to customize a benchmark run.
+struct benchmark_opts {
+	int duration;
+	int data_size;
+	long seed;
+	bool quick;
+	enum MemOp mem_op;
+};
+
 // usage prints the usage message.
 void usage()
 {
 	printf("Architect Memory Benchmark.\n\n"
 	       "Usage:\n"
-	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-q]\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-w] [-q]\n"
 	       "\nOptions:\n"
 	       "  -h  Display this help message.\n"
 	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
 	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
 	       "  -s  Seed for the random number generator [default: current timestamp].\n"
+	       "  -w  Measure memory writes instead of reads.\n"
 	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
 }
 
@@ -88,33 +108,45 @@ unsigned long load_mem()
 	return loaded;
 }
 
-// read_mem reads a random chunk of data from DATA and stores how long it took
-// to read it in RESULTS.
-static void *read_mem()
+// access_mem reads or writes a random chunk of DATA and stores how much data
+// was used in SAMPLES and how long the operation took in RESULTS.
+static void *access_mem(void *arg)
 {
-	// Notify main thread when read to handle ticks.
-	pthread_mutex_lock(&READ_LOCK);
-	pthread_cond_signal(&READ_TICK);
-	pthread_mutex_unlock(&READ_LOCK);
+	enum MemOp *mem_op = (enum MemOp *)arg;
+
+	// Notify main thread when ready to handle ticks.
+	pthread_mutex_lock(&TICK_LOCK);
+	pthread_cond_signal(&TICK);
+	pthread_mutex_unlock(&TICK_LOCK);
 
 	while (true) {
-		pthread_mutex_lock(&READ_LOCK);
-		pthread_cond_wait(&READ_TICK, &READ_LOCK);
+		pthread_mutex_lock(&TICK_LOCK);
+		pthread_cond_wait(&TICK, &TICK_LOCK);
 
-		unsigned long offset = rand() % (DATA_SIZE - 1);
-		unsigned long size = rand() % (READ_MAX_MB * MB);
+		unsigned long size = rand() % (MEM_OP_MAX_MB * MB);
+		unsigned long offset = rand();
+		offset = (offset << 12 | rand()) % (DATA_SIZE - 1);
 
-		// Adjust how much data to read to make sure we stay within bounds.
+		// Adjust how much data to manipulate to make sure we stay within
+		// bounds.
 		if (offset + size > DATA_SIZE) {
 			size = DATA_SIZE - offset;
 		}
 
 		void *buf = malloc(size);
+		memset(buf, 0, size);
 
-		// Read from DATA and track how long the operation takes.
+		// Read or write from DATA and track how long the operation takes.
 		struct timespec before, after;
 		clock_gettime(CLOCK_MONOTONIC, &before);
-		memcpy(buf, DATA, size);
+		switch (*mem_op) {
+		case READ:
+			memcpy(buf, DATA + offset, size);
+			break;
+		case WRITE:
+			memcpy(DATA + offset, buf, size);
+			break;
+		}
 		clock_gettime(CLOCK_MONOTONIC, &after);
 
 		free(buf);
@@ -125,13 +157,13 @@ static void *read_mem()
 		long diff = secs_diff * 1000000000 + nsecs_diff;
 
 		if (RESULTS_I < RESULTS_SIZE) {
-			READS[RESULTS_I] = size;
+			SAMPLES[RESULTS_I] = size;
 			RESULTS[RESULTS_I] = diff;
 			RESULTS_I++;
 		} else {
 			printf("WARN: Result storage limit reached.\n");
 		}
-		pthread_mutex_unlock(&READ_LOCK);
+		pthread_mutex_unlock(&TICK_LOCK);
 	}
 	return NULL;
 }
@@ -210,34 +242,36 @@ void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 	res->p90 = percentile(data, size, 90);
 }
 
-int benchmark(int test_duration, int data_size, long seed, bool quick)
+int benchmark(struct benchmark_opts opts)
 {
 	int ret = EXIT_SUCCESS;
 
 	struct timespec clock_res;
 	clock_getres(CLOCK_MONOTONIC, &clock_res);
 	printf("Clock resolution: %ld ns\n", clock_res.tv_nsec);
-	printf("Benchmark seed:   %ld\n\n", seed);
+	printf("Benchmark seed:   %ld\n", opts.seed);
+	printf("Memory operation: %s\n", MEM_OP_STRING[opts.mem_op]);
+	printf("\n");
 
 	// Initialize RNG seed, signal handler, and shared variables.
-	srand(seed);
-	pthread_mutex_init(&READ_LOCK, NULL);
-	pthread_cond_init(&READ_TICK, NULL);
+	srand(opts.seed);
+	pthread_mutex_init(&TICK_LOCK, NULL);
+	pthread_cond_init(&TICK, NULL);
 
-	DATA_SIZE = data_size * GB;
+	DATA_SIZE = opts.data_size * GB;
 	DATA = (void *)malloc(DATA_SIZE);
-	RESULTS_SIZE = test_duration * 1000 / READ_INTERVAL_MS;
-	READS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
+	RESULTS_SIZE = opts.duration * 1000 / TICK_INTERVAL_MS;
+	SAMPLES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
-	struct stats *read_stats = calloc(sizeof(struct stats), 1);
+	struct stats *samples_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
 	sigemptyset(&set);
 	sigaddset(&set, SIGUSR1);
 
-	printf("Loading %d GB into memory...\n", data_size);
+	printf("Loading %d GB into memory...\n", opts.data_size);
 	unsigned long loaded = load_mem();
 	if (loaded == 0) {
 		ret = EXIT_FAILURE;
@@ -245,7 +279,7 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	}
 	printf("Loaded %ld GB into memory.\n", loaded / GB);
 
-	if (!quick) {
+	if (!opts.quick) {
 		printf("Waiting for SIGUSR1...\n");
 		sigprocmask(SIG_BLOCK, &set, &old_set);
 		while (!PROCEED)
@@ -254,56 +288,56 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 		printf("Signal received.\n");
 	}
 
-	printf("Reading memory every %dms for %ds...\n", READ_INTERVAL_MS,
-	       test_duration);
-	struct timespec read_interval = {
-		.tv_sec = READ_INTERVAL_MS / 1000,
-		.tv_nsec = (READ_INTERVAL_MS % 1000) * 1000000,
+	printf("Accessing memory every %dms for %ds...\n", TICK_INTERVAL_MS,
+	       opts.duration);
+	struct timespec tick_interval = {
+		.tv_sec = TICK_INTERVAL_MS / 1000,
+		.tv_nsec = (TICK_INTERVAL_MS % 1000) * 1000000,
 	};
 
-	pthread_t read_tid;
-	pthread_create(&read_tid, NULL, read_mem, NULL);
+	pthread_t mem_op_tid;
+	pthread_create(&mem_op_tid, NULL, access_mem, (void *)&opts.mem_op);
 
-	// Wait for the read thread to be ready to handle ticks.
-	pthread_mutex_lock(&READ_LOCK);
-	pthread_cond_wait(&READ_TICK, &READ_LOCK);
-	pthread_mutex_unlock(&READ_LOCK);
+	// Wait for the background thread to be ready to handle ticks.
+	pthread_mutex_lock(&TICK_LOCK);
+	pthread_cond_wait(&TICK, &TICK_LOCK);
+	pthread_mutex_unlock(&TICK_LOCK);
 
 	for (int i = 0; i < RESULTS_SIZE; i++) {
-		int lock_res = pthread_mutex_trylock(&READ_LOCK);
+		int lock_res = pthread_mutex_trylock(&TICK_LOCK);
 		if (lock_res == 0) {
-			pthread_cond_signal(&READ_TICK);
-			pthread_mutex_unlock(&READ_LOCK);
+			pthread_cond_signal(&TICK);
+			pthread_mutex_unlock(&TICK_LOCK);
 		} else {
-			printf("WARN: Read lock busy, missing tick.\n");
+			printf("WARN: Lock is busy, missing tick.\n");
 		}
-		if (nanosleep(&read_interval, NULL))
+		if (nanosleep(&tick_interval, NULL))
 			break;
 	}
 
-	pthread_cancel(read_tid);
-	pthread_join(read_tid, NULL);
-	printf("Read %ld segments of memory.\n", RESULTS_I);
+	pthread_cancel(mem_op_tid);
+	pthread_join(mem_op_tid, NULL);
+	printf("Accessed %ld segments of memory.\n", RESULTS_I);
 	if (RESULTS_I == 0) {
 		goto free;
 	}
 
 	printf("Calculating results...\n");
-	qsort(READS, RESULTS_I, sizeof(unsigned long), cmpulong);
+	qsort(SAMPLES, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
-	compute_stats(read_stats, READS, RESULTS_I);
-	printf("\nData read sizes:\n");
-	printf("    Min: %ld bytes\n", read_stats->min);
-	printf("    Max: %ld bytes\n", read_stats->max);
-	printf("    Avg: %.2f bytes\n", read_stats->avg);
-	printf("  Stdev: %.2f bytes\n", read_stats->stdev);
-	printf("    P99: %.2f bytes\n", read_stats->p99);
-	printf("    P95: %.2f bytes\n", read_stats->p95);
-	printf("    P90: %.2f bytes\n", read_stats->p90);
+	compute_stats(samples_stats, SAMPLES, RESULTS_I);
+	printf("\nData sample sizes:\n");
+	printf("    Min: %ld bytes\n", samples_stats->min);
+	printf("    Max: %ld bytes\n", samples_stats->max);
+	printf("    Avg: %.2f bytes\n", samples_stats->avg);
+	printf("  Stdev: %.2f bytes\n", samples_stats->stdev);
+	printf("    P99: %.2f bytes\n", samples_stats->p99);
+	printf("    P95: %.2f bytes\n", samples_stats->p95);
+	printf("    P90: %.2f bytes\n", samples_stats->p90);
 
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("\nData read times:\n");
+	printf("\nData operation times:\n");
 	printf("    Min: %ld ns\n", results_stats->min);
 	printf("    Max: %ld ns\n", results_stats->max);
 	printf("    Avg: %.2f ns\n", results_stats->avg);
@@ -313,12 +347,12 @@ int benchmark(int test_duration, int data_size, long seed, bool quick)
 	printf("    P90: %.2f ns\n", results_stats->p90);
 
 free:
-	free(read_stats);
+	free(samples_stats);
 	free(results_stats);
 	free(DATA);
 	free(RESULTS);
-	pthread_cond_destroy(&READ_TICK);
-	pthread_mutex_destroy(&READ_LOCK);
+	pthread_cond_destroy(&TICK);
+	pthread_mutex_destroy(&TICK_LOCK);
 
 	exit(ret);
 }
@@ -330,8 +364,9 @@ int main(int argc, char **argv)
 	int test_duration = 10;
 	long seed = time(0);
 	bool quick = false;
+	enum MemOp mem_op = READ;
 
-	while ((opt = getopt(argc, argv, "t:d:s:qh")) != -1) {
+	while ((opt = getopt(argc, argv, "t:d:s:wqh")) != -1) {
 		switch (opt) {
 		case 't':
 			test_duration = atoi(optarg);
@@ -344,6 +379,9 @@ int main(int argc, char **argv)
 			break;
 		case 'q':
 			quick = true;
+			break;
+		case 'w':
+			mem_op = WRITE;
 			break;
 		case 'h':
 			usage();
@@ -370,5 +408,12 @@ int main(int argc, char **argv)
 		exit(EXIT_FAILURE);
 	}
 
-	return benchmark(test_duration, data_size, seed, quick);
+	struct benchmark_opts opts = {
+		.duration = test_duration,
+		.data_size = data_size,
+		.seed = seed,
+		.quick = quick,
+		.mem_op = mem_op,
+	};
+	return benchmark(opts);
 }
