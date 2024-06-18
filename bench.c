@@ -25,6 +25,7 @@
 #include <math.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include <sys/wait.h>
 
 #include "bench.h"
 
@@ -67,6 +68,7 @@ struct benchmark_opts {
 	int data_size;
 	long seed;
 	bool quick;
+	bool fork;
 	enum MemOp mem_op;
 };
 
@@ -75,12 +77,13 @@ void usage()
 {
 	printf("Architect Memory Benchmark.\n\n"
 	       "Usage:\n"
-	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-w] [-q]\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-f] [-w] [-q]\n"
 	       "\nOptions:\n"
 	       "  -h  Display this help message.\n"
 	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
 	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
 	       "  -s  Seed for the random number generator [default: current timestamp].\n"
+	       "  -f  Forks a child process to run memory access.\n"
 	       "  -w  Measure memory writes instead of reads.\n"
 	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
 }
@@ -288,6 +291,15 @@ int benchmark(struct benchmark_opts opts)
 		printf("Signal received.\n");
 	}
 
+	if (opts.fork) {
+		printf("Forking child process...\n");
+		pid_t pid = fork();
+		if (pid != 0) {
+			waitpid(pid, NULL, 0);
+			goto free;
+		}
+	}
+
 	printf("Accessing memory every %dms for %ds...\n", TICK_INTERVAL_MS,
 	       opts.duration);
 	struct timespec tick_interval = {
@@ -363,10 +375,10 @@ int main(int argc, char **argv)
 	int data_size = 10;
 	int test_duration = 10;
 	long seed = time(0);
-	bool quick = false;
+	bool quick = false, use_fork = false;
 	enum MemOp mem_op = READ;
 
-	while ((opt = getopt(argc, argv, "t:d:s:wqh")) != -1) {
+	while ((opt = getopt(argc, argv, "t:d:s:wqfh")) != -1) {
 		switch (opt) {
 		case 't':
 			test_duration = atoi(optarg);
@@ -379,6 +391,9 @@ int main(int argc, char **argv)
 			break;
 		case 'q':
 			quick = true;
+			break;
+		case 'f':
+			use_fork = true;
 			break;
 		case 'w':
 			mem_op = WRITE;
@@ -413,6 +428,7 @@ int main(int argc, char **argv)
 		.data_size = data_size,
 		.seed = seed,
 		.quick = quick,
+		.fork = use_fork,
 		.mem_op = mem_op,
 	};
 	return benchmark(opts);
