@@ -14,10 +14,8 @@
 	limitations under the License.
 */
 
-#define READ_INTERVAL_MS 33
-
-#define READ_MAX_MB 100
-#define WAIT_THREADS 10
+#define TICK_INTERVAL_MS 33
+#define MEM_OP_MAX_MB 10
 
 #define MB (1024UL * 1024UL)
 #define GB (1024UL * MB)
