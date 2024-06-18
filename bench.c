@@ -38,6 +38,7 @@ unsigned long DATA_SIZE;
 
 unsigned long *SAMPLES;
 unsigned long *RESULTS;
+unsigned long *RATES;
 unsigned long RESULTS_SIZE;
 unsigned long RESULTS_I = 0;
 pthread_mutex_t TICK_LOCK;
@@ -143,6 +144,7 @@ static void *access_mem(void *arg)
 		if (RESULTS_I < RESULTS_SIZE) {
 			SAMPLES[RESULTS_I] = size;
 			RESULTS[RESULTS_I] = diff;
+			RATES[RESULTS_I] = size / diff;
 			RESULTS_I++;
 		} else {
 			printf("WARN: Result storage limit reached.\n");
@@ -226,6 +228,19 @@ void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 	res->p90 = percentile(data, size, 90);
 }
 
+// write_stats formats and writes the stats values to a given file descriptor.
+void write_stats(FILE *fd, char *title, struct stats *st, char *unit)
+{
+	fprintf(fd, "%s:\n", title);
+	fprintf(fd, "    Min: %ld %s\n", st->min, unit);
+	fprintf(fd, "    Max: %ld %s\n", st->max, unit);
+	fprintf(fd, "    Avg: %.2f %s\n", st->avg, unit);
+	fprintf(fd, "  Stdev: %.2f %s\n", st->stdev, unit);
+	fprintf(fd, "    P99: %.2f %s\n", st->p99, unit);
+	fprintf(fd, "    P95: %.2f %s\n", st->p95, unit);
+	fprintf(fd, "    P90: %.2f %s\n", st->p90, unit);
+}
+
 int benchmark(int test_duration, int data_size, long seed, bool quick,
 	      enum Mode mode)
 {
@@ -246,8 +261,10 @@ int benchmark(int test_duration, int data_size, long seed, bool quick,
 	RESULTS_SIZE = test_duration * 1000 / TICK_INTERVAL_MS;
 	SAMPLES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
-	struct stats *results_stats = calloc(sizeof(struct stats), 1);
+	RATES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	struct stats *samples_stats = calloc(sizeof(struct stats), 1);
+	struct stats *results_stats = calloc(sizeof(struct stats), 1);
+	struct stats *rates_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
@@ -324,26 +341,18 @@ int benchmark(int test_duration, int data_size, long seed, bool quick,
 	printf("Calculating results...\n");
 	qsort(SAMPLES, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
+	qsort(RATES, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(samples_stats, SAMPLES, RESULTS_I);
-	printf("\nData sample sizes:\n");
-	printf("    Min: %ld bytes\n", samples_stats->min);
-	printf("    Max: %ld bytes\n", samples_stats->max);
-	printf("    Avg: %.2f bytes\n", samples_stats->avg);
-	printf("  Stdev: %.2f bytes\n", samples_stats->stdev);
-	printf("    P99: %.2f bytes\n", samples_stats->p99);
-	printf("    P95: %.2f bytes\n", samples_stats->p95);
-	printf("    P90: %.2f bytes\n", samples_stats->p90);
-
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("\nData operation times:\n");
-	printf("    Min: %ld ns\n", results_stats->min);
-	printf("    Max: %ld ns\n", results_stats->max);
-	printf("    Avg: %.2f ns\n", results_stats->avg);
-	printf("  Stdev: %.2f ns\n", results_stats->stdev);
-	printf("    P99: %.2f ns\n", results_stats->p99);
-	printf("    P95: %.2f ns\n", results_stats->p95);
-	printf("    P90: %.2f ns\n", results_stats->p90);
+	compute_stats(rates_stats, RATES, RESULTS_I);
+
+	printf("\n");
+	write_stats(stdout, "Data sample size", samples_stats, "bytes");
+	printf("\n");
+	write_stats(stdout, "Data operation time", results_stats, "ns");
+	printf("\n");
+	write_stats(stdout, "Data rate", rates_stats, "GB/s");
 
 free:
 	free(samples_stats);
