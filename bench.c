@@ -33,6 +33,11 @@ enum Mode {
 	WRITE,
 };
 
+static const char *MODE_STRING[] = {
+	"Read",
+	"Write",
+};
+
 void *DATA;
 unsigned long DATA_SIZE;
 
@@ -110,8 +115,9 @@ static void *access_mem(void *arg)
 		pthread_mutex_lock(&TICK_LOCK);
 		pthread_cond_wait(&TICK, &TICK_LOCK);
 
-		unsigned long offset = rand() % (DATA_SIZE - 1);
 		unsigned long size = rand() % (MEM_OP_MAX_MB * MB);
+		unsigned long offset = rand();
+		offset = (offset << 12 | rand()) % (DATA_SIZE - 1);
 
 		// Adjust how much data to manipulate to make sure we stay within
 		// bounds.
@@ -131,6 +137,7 @@ static void *access_mem(void *arg)
 			break;
 		case WRITE:
 			memcpy(DATA + offset, buf, size);
+			break;
 		}
 		clock_gettime(CLOCK_MONOTONIC, &after);
 
@@ -249,7 +256,9 @@ int benchmark(int test_duration, int data_size, long seed, bool quick,
 	struct timespec clock_res;
 	clock_getres(CLOCK_MONOTONIC, &clock_res);
 	printf("Clock resolution: %ld ns\n", clock_res.tv_nsec);
-	printf("Benchmark seed:   %ld\n\n", seed);
+	printf("Benchmark seed:   %ld\n", seed);
+	printf("Memory operation: %s\n", MODE_STRING[mode]);
+	printf("\n");
 
 	// Initialize RNG seed, signal handler, and shared variables.
 	srand(seed);
@@ -288,16 +297,8 @@ int benchmark(int test_duration, int data_size, long seed, bool quick,
 		printf("Signal received.\n");
 	}
 
-	switch (mode) {
-	case READ:
-		printf("Reading memory every %dms for %ds...\n",
-		       TICK_INTERVAL_MS, test_duration);
-		break;
-	case WRITE:
-		printf("Writing memory every %dms for %ds...\n",
-		       TICK_INTERVAL_MS, test_duration);
-		break;
-	}
+	printf("Accessing memory every %dms for %ds...\n", TICK_INTERVAL_MS,
+	       test_duration);
 	struct timespec tick_interval = {
 		.tv_sec = TICK_INTERVAL_MS / 1000,
 		.tv_nsec = (TICK_INTERVAL_MS % 1000) * 1000000,
@@ -325,15 +326,7 @@ int benchmark(int test_duration, int data_size, long seed, bool quick,
 
 	pthread_cancel(mem_op_tid);
 	pthread_join(mem_op_tid, NULL);
-
-	switch (mode) {
-	case READ:
-		printf("Read %ld segments of memory.\n", RESULTS_I);
-		break;
-	case WRITE:
-		printf("Wrote %ld segments of memory.\n", RESULTS_I);
-		break;
-	}
+	printf("Accessed %ld segments of memory.\n", RESULTS_I);
 	if (RESULTS_I == 0) {
 		goto free;
 	}
