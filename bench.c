@@ -340,13 +340,13 @@ int benchmark(struct benchmark_opts opts)
 
 	compute_stats(samples_stats, SAMPLES, RESULTS_I);
 	printf("\nData sample sizes:\n");
-	printf("    Min: %ld bytes\n", samples_stats->min);
-	printf("    Max: %ld bytes\n", samples_stats->max);
-	printf("    Avg: %.2f bytes\n", samples_stats->avg);
-	printf("  Stdev: %.2f bytes\n", samples_stats->stdev);
-	printf("    P99: %.2f bytes\n", samples_stats->p99);
-	printf("    P95: %.2f bytes\n", samples_stats->p95);
-	printf("    P90: %.2f bytes\n", samples_stats->p90);
+	printf("    Min: %.3f MB\n", samples_stats->min / (double)MB);
+	printf("    Max: %.3f MB\n", samples_stats->max / (double)MB);
+	printf("    Avg: %.3f MB\n", samples_stats->avg / MB);
+	printf("  Stdev: %.3f MB\n", samples_stats->stdev / MB);
+	printf("    P99: %.3f MB\n", samples_stats->p99 / MB);
+	printf("    P95: %.3f MB\n", samples_stats->p95 / MB);
+	printf("    P90: %.3f MB\n", samples_stats->p90 / MB);
 
 	compute_stats(results_stats, RESULTS, RESULTS_I);
 	printf("\nData operation times:\n");
