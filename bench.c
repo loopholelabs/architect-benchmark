@@ -70,6 +70,7 @@ struct benchmark_opts {
 	bool quick;
 	bool fork;
 	enum MemOp mem_op;
+	char *ready_file;
 };
 
 // usage prints the usage message.
@@ -77,12 +78,13 @@ void usage()
 {
 	printf("Architect Memory Benchmark.\n\n"
 	       "Usage:\n"
-	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-f] [-w] [-q]\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-r <path>] [-f] [-w] [-q]\n"
 	       "\nOptions:\n"
 	       "  -h  Display this help message.\n"
 	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
 	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
 	       "  -s  Seed for the random number generator [default: current timestamp].\n"
+	       "  -r  Path used to indicate the benchmark is ready to run.\n"
 	       "  -f  Forks a child process to run memory access.\n"
 	       "  -w  Measure memory writes instead of reads.\n"
 	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
@@ -282,6 +284,22 @@ int benchmark(struct benchmark_opts opts)
 	}
 	printf("Loaded %ld GB into memory.\n", loaded / GB);
 
+	if (opts.ready_file != NULL) {
+		if (remove(opts.ready_file) && errno != ENOENT) {
+			printf("Failed to delete ready file: %s\n",
+			       strerror(errno));
+			goto free;
+		}
+
+		printf("Creating ready file %s...\n", opts.ready_file);
+		FILE *fp = fopen(opts.ready_file, "ab+");
+		if (fp == NULL) {
+			printf("Failed to create ready file: %s\n",
+			       strerror(errno));
+			goto free;
+		}
+		fclose(fp);
+	}
 	if (!opts.quick) {
 		printf("Waiting for SIGUSR1...\n");
 		sigprocmask(SIG_BLOCK, &set, &old_set);
@@ -359,6 +377,8 @@ int benchmark(struct benchmark_opts opts)
 	printf("    P90: %.2f ns\n", results_stats->p90);
 
 free:
+	if (opts.ready_file != NULL)
+		remove(opts.ready_file);
 	free(samples_stats);
 	free(results_stats);
 	free(DATA);
@@ -377,8 +397,9 @@ int main(int argc, char **argv)
 	long seed = time(0);
 	bool quick = false, use_fork = false;
 	enum MemOp mem_op = READ;
+	char *ready_file = NULL;
 
-	while ((opt = getopt(argc, argv, "t:d:s:wqfh")) != -1) {
+	while ((opt = getopt(argc, argv, "t:d:s:r:wqfh")) != -1) {
 		switch (opt) {
 		case 't':
 			test_duration = atoi(optarg);
@@ -394,6 +415,9 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			use_fork = true;
+			break;
+		case 'r':
+			ready_file = optarg;
 			break;
 		case 'w':
 			mem_op = WRITE;
@@ -430,6 +454,7 @@ int main(int argc, char **argv)
 		.quick = quick,
 		.fork = use_fork,
 		.mem_op = mem_op,
+		.ready_file = ready_file,
 	};
 	return benchmark(opts);
 }
