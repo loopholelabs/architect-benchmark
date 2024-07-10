@@ -26,6 +26,7 @@
 #include <stdbool.h>
 #include <pthread.h>
 #include <sys/wait.h>
+#include <numa.h>
 
 #include "bench.h"
 
@@ -66,9 +67,10 @@ struct stats {
 struct benchmark_opts {
 	int duration;
 	int data_size;
+	int forks;
 	long seed;
 	bool quick;
-	bool fork;
+	bool numa;
 	enum MemOp mem_op;
 	char *ready_file;
 };
@@ -78,14 +80,15 @@ void usage()
 {
 	printf("Architect Memory Benchmark.\n\n"
 	       "Usage:\n"
-	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-r <path>] [-f] [-w] [-q]\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-r <path>] [-f <number>] [-n] [-w] [-q]\n"
 	       "\nOptions:\n"
 	       "  -h  Display this help message.\n"
 	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
 	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
 	       "  -s  Seed for the random number generator [default: current timestamp].\n"
+	       "  -f  Number of processes to forks for memory access [default: 1].\n"
+	       "  -n  If set, distribute forked processes across NUMA nodes.\n"
 	       "  -r  Path used to indicate the benchmark is ready to run.\n"
-	       "  -f  Forks a child process to run memory access.\n"
 	       "  -w  Measure memory writes instead of reads.\n"
 	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
 }
@@ -251,6 +254,15 @@ int benchmark(struct benchmark_opts opts)
 {
 	int ret = EXIT_SUCCESS;
 
+	// Run benchmark setup in a single NUMA node.
+	if (numa_available() != -1) {
+		struct bitmask *mask =
+			numa_bitmask_alloc(numa_num_possible_nodes());
+		numa_bitmask_setbit(mask, 0);
+		numa_bind(mask);
+		numa_bitmask_free(mask);
+	}
+
 	struct timespec clock_res;
 	clock_getres(CLOCK_MONOTONIC, &clock_res);
 	printf("Clock resolution: %ld ns\n", clock_res.tv_nsec);
@@ -309,17 +321,37 @@ int benchmark(struct benchmark_opts opts)
 		printf("Signal received.\n");
 	}
 
-	if (opts.fork) {
-		printf("Forking child process...\n");
-		pid_t pid = fork();
-		if (pid != 0) {
-			waitpid(pid, NULL, 0);
-			goto free;
+	if (opts.forks > 0) {
+		printf("Forking %d child processes...\n", opts.forks);
+		for (int i = 0; i < opts.forks; i++) {
+			pid_t pid = fork();
+			if (pid == 0) {
+				if (numa_available() != -1) {
+					struct bitmask *mask = numa_bitmask_alloc(
+						numa_num_possible_nodes());
+					int node = 0;
+					if (opts.numa) {
+						node = i %
+						       (numa_max_node() + 1);
+					}
+					numa_bitmask_setbit(mask, node);
+					numa_bind(mask);
+					numa_bitmask_free(mask);
+				}
+				goto mem_access;
+			}
 		}
+
+		for (int i = 0; i < opts.forks; i++) {
+			waitpid(0, NULL, 0);
+		}
+		goto free;
 	}
 
-	printf("Accessing memory every %dms for %ds...\n", TICK_INTERVAL_MS,
-	       opts.duration);
+mem_access:;
+	pid_t pid = getpid();
+	printf("[%d] Accessing memory every %dms for %ds...\n", pid,
+	       TICK_INTERVAL_MS, opts.duration);
 	struct timespec tick_interval = {
 		.tv_sec = TICK_INTERVAL_MS / 1000,
 		.tv_nsec = (TICK_INTERVAL_MS % 1000) * 1000000,
@@ -339,7 +371,7 @@ int benchmark(struct benchmark_opts opts)
 			pthread_cond_signal(&TICK);
 			pthread_mutex_unlock(&TICK_LOCK);
 		} else {
-			printf("WARN: Lock is busy, missing tick.\n");
+			printf("[%d] WARN: Lock is busy, missing tick.\n", pid);
 		}
 		if (nanosleep(&tick_interval, NULL))
 			break;
@@ -347,34 +379,34 @@ int benchmark(struct benchmark_opts opts)
 
 	pthread_cancel(mem_op_tid);
 	pthread_join(mem_op_tid, NULL);
-	printf("Accessed %ld segments of memory.\n", RESULTS_I);
+	printf("[%d] Accessed %ld segments of memory.\n", pid, RESULTS_I);
 	if (RESULTS_I == 0) {
 		goto free;
 	}
 
-	printf("Calculating results...\n");
+	printf("[%d] Calculating results...\n", pid);
 	qsort(SAMPLES, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(samples_stats, SAMPLES, RESULTS_I);
-	printf("\nData sample sizes:\n");
-	printf("    Min: %.3f MB\n", samples_stats->min / (double)MB);
-	printf("    Max: %.3f MB\n", samples_stats->max / (double)MB);
-	printf("    Avg: %.3f MB\n", samples_stats->avg / MB);
-	printf("  Stdev: %.3f MB\n", samples_stats->stdev / MB);
-	printf("    P99: %.3f MB\n", samples_stats->p99 / MB);
-	printf("    P95: %.3f MB\n", samples_stats->p95 / MB);
-	printf("    P90: %.3f MB\n", samples_stats->p90 / MB);
+	printf("[%d] Data sample sizes:\n", pid);
+	printf("[%d]     Min: %.3f MB\n", pid, samples_stats->min / (double)MB);
+	printf("[%d]     Max: %.3f MB\n", pid, samples_stats->max / (double)MB);
+	printf("[%d]     Avg: %.3f MB\n", pid, samples_stats->avg / MB);
+	printf("[%d]   Stdev: %.3f MB\n", pid, samples_stats->stdev / MB);
+	printf("[%d]     P99: %.3f MB\n", pid, samples_stats->p99 / MB);
+	printf("[%d]     P95: %.3f MB\n", pid, samples_stats->p95 / MB);
+	printf("[%d]     P90: %.3f MB\n", pid, samples_stats->p90 / MB);
 
 	compute_stats(results_stats, RESULTS, RESULTS_I);
-	printf("\nData operation times:\n");
-	printf("    Min: %ld ns\n", results_stats->min);
-	printf("    Max: %ld ns\n", results_stats->max);
-	printf("    Avg: %.2f ns\n", results_stats->avg);
-	printf("  Stdev: %.2f ns\n", results_stats->stdev);
-	printf("    P99: %.2f ns\n", results_stats->p99);
-	printf("    P95: %.2f ns\n", results_stats->p95);
-	printf("    P90: %.2f ns\n", results_stats->p90);
+	printf("[%d] Data operation times:\n", pid);
+	printf("[%d]     Min: %ld ns\n", pid, results_stats->min);
+	printf("[%d]     Max: %ld ns\n", pid, results_stats->max);
+	printf("[%d]     Avg: %.2f ns\n", pid, results_stats->avg);
+	printf("[%d]   Stdev: %.2f ns\n", pid, results_stats->stdev);
+	printf("[%d]     P99: %.2f ns\n", pid, results_stats->p99);
+	printf("[%d]     P95: %.2f ns\n", pid, results_stats->p95);
+	printf("[%d]     P90: %.2f ns\n", pid, results_stats->p90);
 
 free:
 	if (opts.ready_file != NULL)
@@ -394,12 +426,13 @@ int main(int argc, char **argv)
 	int opt;
 	int data_size = 10;
 	int test_duration = 10;
+	int forks = 0;
 	long seed = time(0);
-	bool quick = false, use_fork = false;
+	bool quick = false, numa = false;
 	enum MemOp mem_op = READ;
 	char *ready_file = NULL;
 
-	while ((opt = getopt(argc, argv, "t:d:s:r:wqfh")) != -1) {
+	while ((opt = getopt(argc, argv, "t:d:s:r:f:nwqh")) != -1) {
 		switch (opt) {
 		case 't':
 			test_duration = atoi(optarg);
@@ -414,10 +447,13 @@ int main(int argc, char **argv)
 			quick = true;
 			break;
 		case 'f':
-			use_fork = true;
+			forks = atoi(optarg);
 			break;
 		case 'r':
 			ready_file = optarg;
+			break;
+		case 'n':
+			numa = true;
 			break;
 		case 'w':
 			mem_op = WRITE;
@@ -450,9 +486,10 @@ int main(int argc, char **argv)
 	struct benchmark_opts opts = {
 		.duration = test_duration,
 		.data_size = data_size,
+		.forks = forks,
 		.seed = seed,
 		.quick = quick,
-		.fork = use_fork,
+		.numa = numa,
 		.mem_op = mem_op,
 		.ready_file = ready_file,
 	};

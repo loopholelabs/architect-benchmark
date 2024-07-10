@@ -1,7 +1,7 @@
 BIN = bench
 CC = gcc
 CFLAGS = -Wall -O2
-LDLIBS = -lm
+LDLIBS = -lm -lnuma
 DOCKER_IMAGE ?= architect-benchmark
 
 all: $(BIN)
