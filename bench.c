@@ -35,6 +35,7 @@ unsigned long DATA_SIZE;
 
 unsigned long *SAMPLES;
 unsigned long *RESULTS;
+unsigned long *RATES;
 unsigned long RESULTS_SIZE;
 unsigned long RESULTS_I = 0;
 pthread_mutex_t TICK_LOCK;
@@ -163,10 +164,12 @@ static void *access_mem(void *arg)
 		long secs_diff = after.tv_sec - before.tv_sec;
 		long nsecs_diff = after.tv_nsec - before.tv_nsec;
 		long diff = secs_diff * 1000000000 + nsecs_diff;
+		long rate = (size * 1024 / diff);
 
 		if (RESULTS_I < RESULTS_SIZE) {
 			SAMPLES[RESULTS_I] = size;
 			RESULTS[RESULTS_I] = diff;
+			RATES[RESULTS_I] = rate;
 			RESULTS_I++;
 		} else {
 			printf("WARN: Result storage limit reached.\n");
@@ -280,8 +283,10 @@ int benchmark(struct benchmark_opts opts)
 	RESULTS_SIZE = opts.duration * 1000 / TICK_INTERVAL_MS;
 	SAMPLES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	RESULTS = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
+	RATES = (unsigned long *)calloc(sizeof(unsigned long), RESULTS_SIZE);
 	struct stats *results_stats = calloc(sizeof(struct stats), 1);
 	struct stats *samples_stats = calloc(sizeof(struct stats), 1);
+	struct stats *rates_stats = calloc(sizeof(struct stats), 1);
 
 	signal(SIGUSR1, handle_signal);
 	sigset_t set, old_set;
@@ -387,6 +392,7 @@ mem_access:;
 	printf("[%d] Calculating results...\n", pid);
 	qsort(SAMPLES, RESULTS_I, sizeof(unsigned long), cmpulong);
 	qsort(RESULTS, RESULTS_I, sizeof(unsigned long), cmpulong);
+	qsort(RATES, RESULTS_I, sizeof(unsigned long), cmpulong);
 
 	compute_stats(samples_stats, SAMPLES, RESULTS_I);
 	printf("[%d] Data sample sizes:\n", pid);
@@ -407,6 +413,18 @@ mem_access:;
 	printf("[%d]     P99: %.2f ns\n", pid, results_stats->p99);
 	printf("[%d]     P95: %.2f ns\n", pid, results_stats->p95);
 	printf("[%d]     P90: %.2f ns\n", pid, results_stats->p90);
+
+	compute_stats(rates_stats, RATES, RESULTS_I);
+	printf("[%d] Data operation throughput:\n", pid);
+	printf("[%d]     Min: %.3f GB/s\n", pid,
+	       rates_stats->min / (double)1024);
+	printf("[%d]     Max: %.3f GB/s\n", pid,
+	       rates_stats->max / (double)1024);
+	printf("[%d]     Avg: %.3f GB/s\n", pid, rates_stats->avg / 1024);
+	printf("[%d]   Stdev: %.3f GB/s\n", pid, rates_stats->stdev / 1024);
+	printf("[%d]     P99: %.3f GB/s\n", pid, rates_stats->p99 / 1024);
+	printf("[%d]     P95: %.3f GB/s\n", pid, rates_stats->p95 / 1024);
+	printf("[%d]     P90: %.3f GB/s\n", pid, rates_stats->p90 / 1024);
 
 free:
 	if (opts.ready_file != NULL)
