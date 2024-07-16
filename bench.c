@@ -422,9 +422,12 @@ mem_access:;
 	       rates_stats->max / (double)1024);
 	printf("[%d]     Avg: %.3f GB/s\n", pid, rates_stats->avg / 1024);
 	printf("[%d]   Stdev: %.3f GB/s\n", pid, rates_stats->stdev / 1024);
-	printf("[%d]     P99: %.3f GB/s\n", pid, rates_stats->p99 / 1024);
-	printf("[%d]     P95: %.3f GB/s\n", pid, rates_stats->p95 / 1024);
-	printf("[%d]     P90: %.3f GB/s\n", pid, rates_stats->p90 / 1024);
+	printf("[%d]     P99: %.3f GB/s\n", pid,
+	       percentile(RATES, RESULTS_I, 1) / 1024);
+	printf("[%d]     P95: %.3f GB/s\n", pid,
+	       percentile(RATES, RESULTS_I, 5) / 1024);
+	printf("[%d]     P90: %.3f GB/s\n", pid,
+	       percentile(RATES, RESULTS_I, 10) / 1024);
 
 free:
 	if (opts.ready_file != NULL)
