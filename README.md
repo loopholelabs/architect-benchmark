@@ -25,7 +25,8 @@ Start the benchmark binary.
 ```console
 $ ./bench
 Clock resolution: 1 ns
-Benchmark seed:   1718393125
+Benchmark seed:   1721168194
+Memory operation: Read
 
 Loading 10 GB into memory...
 Loaded 10 GB into memory.
@@ -43,27 +44,33 @@ pkill -SIGUSR1 bench
 $ ./bench
 ...
 Signal received.
-Reading memory every 33ms for 10s...
-Read 303 segments of memory.
-Calculating results...
-
-Data read sizes:
-    Min: 538397 bytes
-    Max: 104448524 bytes
-    Avg: 54401862.46 bytes
-  Stdev: 30586031.83 bytes
-    P99: 103187622.24 bytes
-    P95: 97357087.90 bytes
-    P90: 93253651.40 bytes
-
-Data read times:
-    Min: 44 ns
-    Max: 386 ns
-    Avg: 192.54 ns
-  Stdev: 25.23 ns
-    P99: 220.98 ns
-    P95: 204.00 ns
-    P90: 202.00 ns
+[102256] Accessing memory every 33ms for 10s...
+[102256] Accessed 303 segments of memory.
+[102256] Calculating results...
+[102256] Data sample sizes:
+[102256]     Min: 0.037 MB
+[102256]     Max: 9.988 MB
+[102256]     Avg: 4.855 MB
+[102256]   Stdev: 2.802 MB
+[102256]     P99: 9.935 MB
+[102256]     P95: 9.478 MB
+[102256]     P90: 8.840 MB
+[102256] Data operation times:
+[102256]     Min: 103 ns
+[102256]     Max: 967 ns
+[102256]     Avg: 493.88 ns
+[102256]   Stdev: 106.78 ns
+[102256]     P99: 852.56 ns
+[102256]     P95: 689.30 ns
+[102256]     P90: 621.60 ns
+[102256] Data operation throughput:
+[102256]     Min: 97.002 GB/s
+[102256]     Max: 43450.945 GB/s
+[102256]     Avg: 10018.203 GB/s
+[102256]   Stdev: 5414.065 GB/s
+[102256]     P99: 400.824 GB/s
+[102256]     P95: 1307.051 GB/s
+[102256]     P90: 2912.875 GB/s
 ```
 
 ### Running with Docker
@@ -102,12 +109,16 @@ make docker-signal
 Architect Memory Benchmark.
 
 Usage:
-  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-q]
+  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-r <path>] [-f <number>] [-n] [-w] [-q]
 
 Options:
   -h  Display this help message.
   -t  Time in seconds for how long the test should run [default: 10].
   -d  Amount of data in gigabytes to load into memory [default: 10].
   -s  Seed for the random number generator [default: current timestamp].
+  -f  Number of processes to forks for memory access [default: 1].
+  -n  If set, distribute forked processes across NUMA nodes.
+  -r  Path used to indicate the benchmark is ready to run.
+  -w  Measure memory writes instead of reads.
   -q  Quick mode, don't wait for SIGUSR1 before starting test.
 ```
