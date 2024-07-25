@@ -27,11 +27,20 @@
 #include <pthread.h>
 #include <sys/wait.h>
 #include <numa.h>
+#include <arpa/inet.h>
 
 #include "bench.h"
 
+const char *RESP_READY = "HTTP/1.1 200 OK\r\n"
+			 "Content-length: 0\r\n";
+const char *RESP_NOT_READY = "HTTP/1.1 503 Service Unavailable\r\n"
+			     "Content-length: 0\r\n";
+
 void *DATA;
 unsigned long DATA_SIZE;
+
+pthread_mutex_t READY_LOCK;
+bool READY = false;
 
 unsigned long *SAMPLES;
 unsigned long *RESULTS;
@@ -53,6 +62,12 @@ static const char *MEM_OP_STRING[] = {
 	"Write",
 };
 
+// server_opts are the options passed to the liveness server.
+struct server_opts {
+	struct sockaddr_in addr;
+	int sock_fd;
+};
+
 // stats are statistics values computed from sampled data.
 struct stats {
 	unsigned long min;
@@ -69,11 +84,11 @@ struct benchmark_opts {
 	int duration;
 	int data_size;
 	int forks;
+	int port;
 	long seed;
 	bool quick;
 	bool numa;
 	enum MemOp mem_op;
-	char *ready_file;
 };
 
 // usage prints the usage message.
@@ -81,15 +96,15 @@ void usage()
 {
 	printf("Architect Memory Benchmark.\n\n"
 	       "Usage:\n"
-	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-r <path>] [-f <number>] [-n] [-w] [-q]\n"
+	       "  bech [-h] [-t <seconds>] [-d <gigabytes>] [-s <seed>] [-f <number>] [-p <port>] [-n] [-w] [-q]\n"
 	       "\nOptions:\n"
 	       "  -h  Display this help message.\n"
 	       "  -t  Time in seconds for how long the test should run [default: 10].\n"
 	       "  -d  Amount of data in gigabytes to load into memory [default: 10].\n"
 	       "  -s  Seed for the random number generator [default: current timestamp].\n"
 	       "  -f  Number of processes to forks for memory access [default: 1].\n"
+	       "  -p  The port number to use for the liveness server [default: 8080].\n"
 	       "  -n  If set, distribute forked processes across NUMA nodes.\n"
-	       "  -r  Path used to indicate the benchmark is ready to run.\n"
 	       "  -w  Measure memory writes instead of reads.\n"
 	       "  -q  Quick mode, don't wait for SIGUSR1 before starting test.\n");
 }
@@ -253,6 +268,47 @@ void compute_stats(struct stats *res, unsigned long *data, unsigned long size)
 	res->p90 = percentile(data, size, 90);
 }
 
+// start_server starts the HTTP server used to indicate when the test data
+// is loaded into memory.
+void *start_server(void *arg)
+{
+	struct server_opts *opts = (struct server_opts *)arg;
+	char buffer[1024];
+	const char *resp;
+
+	while (1) {
+		socklen_t size = sizeof(opts->addr);
+		int new_sock_fd = accept(opts->sock_fd,
+					 (struct sockaddr *)&opts->addr, &size);
+		if (new_sock_fd < 0) {
+			printf("Failed to accept connection: %s\n",
+			       strerror(errno));
+			continue;
+		}
+
+		if (read(new_sock_fd, buffer, 1024) < 0) {
+			printf("Failed to read request: %s\n", strerror(errno));
+			continue;
+		}
+
+		pthread_mutex_lock(&READY_LOCK);
+		if (READY) {
+			resp = RESP_READY;
+		} else {
+			resp = RESP_NOT_READY;
+		}
+		pthread_mutex_unlock(&READY_LOCK);
+
+		if (write(new_sock_fd, resp, strlen(resp)) < 0) {
+			printf("Failed to write response: %s\n",
+			       strerror(errno));
+			continue;
+		}
+
+		close(new_sock_fd);
+	}
+}
+
 int benchmark(struct benchmark_opts opts)
 {
 	int ret = EXIT_SUCCESS;
@@ -275,6 +331,7 @@ int benchmark(struct benchmark_opts opts)
 
 	// Initialize RNG seed, signal handler, and shared variables.
 	srand(opts.seed);
+	pthread_mutex_init(&READY_LOCK, NULL);
 	pthread_mutex_init(&TICK_LOCK, NULL);
 	pthread_cond_init(&TICK, NULL);
 
@@ -293,6 +350,40 @@ int benchmark(struct benchmark_opts opts)
 	sigemptyset(&set);
 	sigaddset(&set, SIGUSR1);
 
+	// Start liveness HTTP server.
+	int sock_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock_fd == -1) {
+		printf("Failed to create socket: %s\n", strerror(errno));
+		ret = EXIT_FAILURE;
+		goto free;
+	}
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(opts.port);
+	addr.sin_addr.s_addr = htonl(INADDR_ANY);
+
+	if (bind(sock_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+		printf("Failed to bind socket: %s\n", strerror(errno));
+		ret = EXIT_FAILURE;
+		goto free;
+	}
+
+	if (listen(sock_fd, SOMAXCONN) < 0) {
+		printf("Failed to listen on socket: %s\n", strerror(errno));
+		ret = EXIT_FAILURE;
+		goto free;
+	}
+
+	struct server_opts server_opts = {
+		.addr = addr,
+		.sock_fd = sock_fd,
+	};
+	pthread_t http_server_tid;
+	pthread_create(&http_server_tid, NULL, start_server,
+		       (void *)&server_opts);
+	printf("Serving liveness server on port %d...\n", opts.port);
+
 	printf("Loading %d GB into memory...\n", opts.data_size);
 	unsigned long loaded = load_mem();
 	if (loaded == 0) {
@@ -301,22 +392,10 @@ int benchmark(struct benchmark_opts opts)
 	}
 	printf("Loaded %ld GB into memory.\n", loaded / GB);
 
-	if (opts.ready_file != NULL) {
-		if (remove(opts.ready_file) && errno != ENOENT) {
-			printf("Failed to delete ready file: %s\n",
-			       strerror(errno));
-			goto free;
-		}
+	pthread_mutex_lock(&READY_LOCK);
+	READY = true;
+	pthread_mutex_unlock(&READY_LOCK);
 
-		printf("Creating ready file %s...\n", opts.ready_file);
-		FILE *fp = fopen(opts.ready_file, "ab+");
-		if (fp == NULL) {
-			printf("Failed to create ready file: %s\n",
-			       strerror(errno));
-			goto free;
-		}
-		fclose(fp);
-	}
 	if (!opts.quick) {
 		printf("Waiting for SIGUSR1...\n");
 		sigprocmask(SIG_BLOCK, &set, &old_set);
@@ -430,8 +509,7 @@ mem_access:;
 	       percentile(RATES, RESULTS_I, 10) / 1024);
 
 free:
-	if (opts.ready_file != NULL)
-		remove(opts.ready_file);
+	close(sock_fd);
 	free(samples_stats);
 	free(results_stats);
 	free(DATA);
@@ -448,12 +526,12 @@ int main(int argc, char **argv)
 	int data_size = 10;
 	int test_duration = 10;
 	int forks = 0;
+	int port = 8080;
 	long seed = time(0);
 	bool quick = false, numa = false;
 	enum MemOp mem_op = READ;
-	char *ready_file = NULL;
 
-	while ((opt = getopt(argc, argv, "t:d:s:r:f:nwqh")) != -1) {
+	while ((opt = getopt(argc, argv, "t:d:s:f:p:nwqh")) != -1) {
 		switch (opt) {
 		case 't':
 			test_duration = atoi(optarg);
@@ -470,8 +548,8 @@ int main(int argc, char **argv)
 		case 'f':
 			forks = atoi(optarg);
 			break;
-		case 'r':
-			ready_file = optarg;
+		case 'p':
+			port = atoi(optarg);
 			break;
 		case 'n':
 			numa = true;
@@ -508,11 +586,11 @@ int main(int argc, char **argv)
 		.duration = test_duration,
 		.data_size = data_size,
 		.forks = forks,
+		.port = port,
 		.seed = seed,
 		.quick = quick,
 		.numa = numa,
 		.mem_op = mem_op,
-		.ready_file = ready_file,
 	};
 	return benchmark(opts);
 }
